@@ -3,9 +3,34 @@ require 'ipaddr'
 require 'yaml'
 
 require 'fluent/parser'
+require 'fluent/plugin/bgp_parser'
 
 module Fluent
   class TextParser
+    class BmpRecord < BinData::Record
+      endian :big
+      uint8  :version
+      uint32 :record_length
+      uint8  :bmp_record_type
+    end
+
+    class BmpPerPeerHeader < BinData::Record
+      endian :big
+      uint8  :peer_type
+      bit1   :protocol
+      bit1   :installed
+      bit6   :reserve
+      uint64 :rd
+      choice :peer_address, :selection => :protocol do
+        ip4_addr16 0
+        ip6_addr 1
+      end
+      uint32 :peer_as
+      ip4_addr :bgp_id
+      uint32 :timestamp_sec
+      uint32 :timestamp_microsec
+    end
+
     class IP4Addr16 < BinData::Primitive
       endian :big
       skip   :length => 12
@@ -59,109 +84,6 @@ module Fluent
       end
     end
     
-    class BmpPerPeerHeader < BinData::Record
-      endian :big
-      uint8  :peer_type
-      bit1   :protocol
-      bit1   :installed
-      bit6   :reserve
-      uint64 :rd
-      choice :peer_address, :selection => :protocol do
-        ip4_addr16 0
-        ip6_addr 1
-      end
-      uint32 :peer_as
-      ip4_addr :bgp_id
-      uint32 :timestamp_sec
-      uint32 :timestamp_microsec
-    end
-    
-    class BgpCapability < BinData::Record
-      uint8 :code
-      uint8 :capability_length
-      string :capability_value, :read_length => :capability_length
-    end
-    
-    class BgpOption < BinData::Record
-      endian :big
-      uint8 :type
-      uint8 :param_length
-      buffer :capabilities, :length => :param_length do
-        array :read_until => :eof do
-          bgp_capability :capability
-        end
-      end
-    end
-    
-    class BgpOpenMessage < BinData::Record
-      endian :big
-      skip   :length =>  16
-      uint16 :message_size
-      uint8  :type
-      uint8  :bgp_version
-      uint16 :my_asn
-      uint16 :hold_time
-      ip4_addr :bgp_id
-      uint8  :opt_length
-      buffer :options, :length => :opt_length do
-        array :read_until => :eof do
-          bgp_option :option
-        end
-      end
-    end
-    
-    class BgpPathAttribute < BinData::Record
-      endian :big
-      uint8 :attribute_flag
-      uint8 :attribute_type
-      choice :attribute_length, :selection => :extended? do
-        uint8 0
-        uint16 1
-      end
-      string :attribute_value, :read_length => :attribute_length
-      
-      def extended?
-        (attribute_flag >> 5) & 1
-      end
-    
-    end
-    
-    class BgpUpdateMessage < BinData::Record
-      endian :big
-      skip   :length =>  16
-      uint16 :message_size
-      uint8  :type
-      uint16 :withdrawn_route_length
-      buffer :withdrawn_routes, :length => :withdrawn_route_length, :onlyif => :has_withdrawn? do
-        array :withdrawn_cidr, :read_until => :eof do
-          uint8 :cidr_bit_length
-          ip4_addr :withdrawn_prefix
-        end
-      end
-      uint16 :total_path_attribute_length
-      buffer :path_attributes_buffer, :length => :total_path_attribute_length do
-        array :path_attributes, :read_until => :eof do
-          bgp_path_attribute :attr
-        end
-      end
-      buffer :nlris_buffer, :length => :nlri_length do
-        array :nlris, :read_until => :eof do
-          uint8 :nlri_bit_length
-          ip4_addr :address
-        end
-      end
-    
-      def has_withdrawn?
-        withdrawn_route_length.nonzero?
-      end
-    
-      def nlri_length
-        message_size - (16 + 2 + 1 + 2 + withdrawn_route_length + 2 + total_path_attribute_length)
-      end
-    
-    end
-    
-    
     class RouteMonitor < BinData::Record
       endian :big
       bmp_per_peer_header :header
@@ -181,7 +103,6 @@ module Fluent
         end
       end 
     end
-    
     
     class PeerDownNotify < BinData::Record
       endian :big
@@ -221,19 +142,5 @@ module Fluent
       string :info, :read_length => :info_size
     end
     
-    class BmpRecord < BinData::Record
-      endian :big
-      uint8  :version
-      uint32 :record_length
-      uint8  :bmp_record_type
-      choice :bmp_record, :selection => :bmp_record_type do
-        route_monitor       0
-        statistics_report   1
-        peer_down_notify    2
-        peer_up_notify      3
-        initiation_message  4
-        termination_message 5
-      end
-    end
   end
 end
